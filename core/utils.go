@@ -374,6 +374,22 @@ func newBifrostQueueFullError() *schemas.BifrostError {
 	}
 }
 
+// newBifrostProviderShuttingDownError creates a retryable 503 error for
+// requests rejected while a provider queue is retiring.
+func newBifrostProviderShuttingDownError() *schemas.BifrostError {
+	statusCode := 503
+	errorType := schemas.ProviderShuttingDown
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     &statusCode,
+		Type:           &errorType,
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: "provider is shutting down",
+		},
+	}
+}
+
 // newBifrostMessageChan creates a channel that sends a bifrost response.
 // It is used to send a bifrost response to the client.
 func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {

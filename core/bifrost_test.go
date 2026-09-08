@@ -2160,17 +2160,9 @@ drainLoop:
 		select {
 		case r := <-pq.queue:
 			provKey, mod, _ := r.GetRequestFields()
-			r.Err <- schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: "provider is shutting down",
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:            r.RequestType,
-					Provider:               provKey,
-					OriginalModelRequested: mod,
-				},
-			}
+			bifrostErr := newBifrostProviderShuttingDownError()
+			bifrostErr.PopulateExtraFields(r.RequestType, provKey, mod, mod)
+			r.Err <- *bifrostErr
 		default:
 			break drainLoop
 		}
@@ -2180,6 +2172,7 @@ drainLoop:
 	for i, msg := range msgs {
 		select {
 		case bifrostErr := <-msg.Err:
+			assertProviderShuttingDownError(t, &bifrostErr)
 			if bifrostErr.Error == nil {
 				t.Errorf("message %d: received nil Error field", i)
 				continue
@@ -2698,17 +2691,9 @@ drainLoop:
 		select {
 		case r := <-pq.queue:
 			provKey, mod, _ := r.GetRequestFields()
-			r.Err <- schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: "provider is shutting down",
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:            r.RequestType,
-					Provider:               provKey,
-					OriginalModelRequested: mod,
-				},
-			}
+			bifrostErr := newBifrostProviderShuttingDownError()
+			bifrostErr.PopulateExtraFields(r.RequestType, provKey, mod, mod)
+			r.Err <- *bifrostErr
 		default:
 			break drainLoop
 		}
@@ -2718,6 +2703,7 @@ drainLoop:
 	for i, msg := range msgs {
 		select {
 		case bifrostErr := <-msg.Err:
+			assertProviderShuttingDownError(t, &bifrostErr)
 			if bifrostErr.Error == nil {
 				t.Errorf("message %d: got nil Error field in BifrostError", i)
 				continue
