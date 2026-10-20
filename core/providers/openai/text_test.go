@@ -1,12 +1,89 @@
 package openai
 
 import (
+	"context"
+	"encoding/json"
+	"github.com/stretchr/testify/require"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestTextCompletionPreservesZeroUsage(t *testing.T) {
+	for _, input := range []string{
+		`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+		`{"total_tokens":12}`,
+		`{"prompt_tokens":0,"total_tokens":12}`,
+		`{"completion_tokens":0,"total_tokens":12}`,
+		`{"prompt_tokens":null,"completion_tokens":null,"total_tokens":12}`,
+	} {
+		for _, streaming := range []bool{false, true} {
+			name := input + "/unary"
+			if streaming {
+				name = input + "/stream"
+			}
+			t.Run(name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					require.Equal(t, "/v1/completions", r.URL.Path)
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						io.WriteString(w, `data: {"id":"text-usage","model":"fixture","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n")
+						io.WriteString(w, `data: {"id":"text-usage","model":"fixture","choices":[],"usage":`+input+"}\n\ndata: [DONE]\n\n")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+						io.WriteString(w, `{"id":"text-usage","model":"fixture","choices":[{"index":0,"text":"hello","finish_reason":"stop"}],"usage":`+input+`}`)
+					}
+				}))
+				defer server.Close()
+				provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true}}, testNoopLogger{})
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				req := &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "fixture", Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hello")}}
+				check := func(response *schemas.BifrostTextCompletionResponse) {
+					t.Helper()
+					wire, err := schemas.MarshalSorted(response.WithPreservedUsage())
+					require.NoError(t, err)
+					var body struct {
+						Usage map[string]json.RawMessage `json:"usage"`
+					}
+					require.NoError(t, json.Unmarshal(wire, &body))
+					var expected map[string]json.RawMessage
+					require.NoError(t, json.Unmarshal([]byte(input), &expected))
+					for field, value := range expected {
+						if string(value) == "null" {
+							delete(expected, field)
+						}
+					}
+					require.Equal(t, expected, body.Usage, string(wire))
+				}
+				if !streaming {
+					response, err := provider.TextCompletion(ctx, testKey(), req)
+					require.Nil(t, err)
+					require.NotNil(t, response)
+					check(response)
+				} else {
+					stream, err := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), req)
+					require.Nil(t, err)
+					sawUsage := false
+					for _, chunk := range collectChunks(t, stream) {
+						require.Nil(t, chunk.BifrostError)
+						if response := chunk.BifrostTextCompletionResponse; response != nil && response.Usage != nil {
+							sawUsage = true
+							check(response)
+						}
+					}
+					require.True(t, sawUsage)
+				}
+			})
+		}
+	}
+}
 
 func TestToOpenAITextCompletionRequest_FireworksUsesCacheIsolation(t *testing.T) {
 	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)

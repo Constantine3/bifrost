@@ -1,12 +1,114 @@
 package integrations
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestOpenAICompletionWirePreservesReportedTokenCounts(t *testing.T) {
+	for _, input := range []string{
+		`null`,
+		`{"total_tokens":12}`,
+		`{"prompt_tokens":0,"total_tokens":12}`,
+		`{"completion_tokens":0,"total_tokens":12}`,
+		`{"prompt_tokens":12,"total_tokens":12}`,
+		`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+		`{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}`,
+		`{"prompt_tokens":0,"completion_tokens":2,"total_tokens":2}`,
+		`{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`,
+	} {
+		for _, withCost := range []bool{false, true} {
+			var usage *schemas.BifrostLLMUsage
+			if err := schemas.Unmarshal([]byte(input), &usage); err != nil {
+				t.Fatal(err)
+			}
+			if usage != nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{CachedReadTokens: 2}
+				usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{ReasoningTokens: 1}
+				if withCost {
+					usage.Cost = &schemas.BifrostCost{TotalCost: 0.25}
+				}
+			}
+			if usage != nil {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(input), &fields); err != nil {
+					t.Fatal(err)
+				}
+				usage.PromptTokensExplicitZero = string(fields["prompt_tokens"]) == "0"
+				usage.CompletionTokensExplicitZero = string(fields["completion_tokens"]) == "0"
+			}
+			before, err := schemas.MarshalSorted(usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, response := range map[string]any{
+				"chat": &schemas.BifrostChatResponse{ID: "usage-test", Model: "fixture", Usage: usage},
+				"text": &schemas.BifrostTextCompletionResponse{ID: "usage-test", Model: "fixture", Usage: usage},
+			} {
+				t.Run(name+"/"+input, func(t *testing.T) {
+					wire, err := schemas.MarshalSorted(openAIWireCostResponse(response))
+					if err != nil {
+						t.Fatal(err)
+					}
+					var body struct {
+						ID    string         `json:"id"`
+						Model string         `json:"model"`
+						Usage map[string]any `json:"usage"`
+					}
+					if err := json.Unmarshal(wire, &body); err != nil {
+						t.Fatal(err)
+					}
+					if body.ID != "usage-test" || body.Model != "fixture" {
+						t.Fatalf("response fields lost: %s", wire)
+					}
+					if usage == nil {
+						if body.Usage != nil {
+							t.Fatalf("nil usage was fabricated: %s", wire)
+						}
+						return
+					}
+					for field, want := range map[string]int{
+						"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens, "total_tokens": usage.TotalTokens,
+					} {
+						if field == "prompt_tokens" && want == 0 && !usage.PromptTokensExplicitZero || field == "completion_tokens" && want == 0 && !usage.CompletionTokensExplicitZero {
+							if _, exists := body.Usage[field]; exists {
+								t.Errorf("unreported %s was added: %s", field, wire)
+							}
+							continue
+						}
+						if got, ok := body.Usage[field].(float64); !ok || got != float64(want) {
+							t.Errorf("required count %s lost: %s", field, wire)
+						}
+					}
+					for _, field := range []string{"prompt_tokens_details", "completion_tokens_details"} {
+						if _, ok := body.Usage[field].(map[string]any); !ok {
+							t.Errorf("usage details %s lost: %s", field, wire)
+						}
+					}
+					if withCost && body.Usage["cost"] != 0.25 {
+						t.Errorf("cost must remain a bare total: %s", wire)
+					}
+					if !withCost {
+						if _, ok := body.Usage["cost"]; ok {
+							t.Errorf("cost was fabricated: %s", wire)
+						}
+					}
+				})
+			}
+			after, err := schemas.MarshalSorted(usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatalf("shared usage was mutated: before %s, after %s", before, after)
+			}
+		}
+	}
+}
 
 // TestOpenAIWireCostResponse verifies 2A: the OpenAI-compatible wire renders
 // usage.cost as the bare total (float), the legacy shape SDKs accept, instead of
@@ -105,8 +207,8 @@ func TestOpenAIWireCostResponse(t *testing.T) {
 		}
 	})
 
-	t.Run("chat without cost passes through the same pointer", func(t *testing.T) {
-		resp := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{TotalTokens: 15}}
+	t.Run("chat without cost and with nonzero counts passes through the same pointer", func(t *testing.T) {
+		resp := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}}
 		if out := openAIWireCostResponse(resp); any(out) != any(resp) {
 			t.Error("cost-free response should pass through unchanged")
 		}

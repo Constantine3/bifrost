@@ -1,6 +1,252 @@
 package schemas
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestNonCompletionUsageKeepsOptionalCounts(t *testing.T) {
+	for _, usage := range []*BifrostLLMUsage{
+		{},
+		{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true},
+		{PromptTokens: 39, TotalTokens: 39},
+		{SearchUnits: Ptr(1)},
+	} {
+		for _, tc := range []struct {
+			name     string
+			response any
+		}{
+			{"embedding", &BifrostEmbeddingResponse{Usage: usage}},
+			{"rerank", &BifrostRerankResponse{Usage: usage}},
+			{"decision", &BifrostDecisionResponse{Usage: usage}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				wire, err := MarshalSorted(tc.response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body struct {
+					Usage map[string]json.RawMessage `json:"usage"`
+				}
+				if err := json.Unmarshal(wire, &body); err != nil {
+					t.Fatal(err)
+				}
+				for field, count := range map[string]int{
+					"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens,
+				} {
+					if _, exists := body.Usage[field]; exists != (count != 0) {
+						t.Errorf("%s presence changed for non-completion usage: %s", field, wire)
+					}
+				}
+			})
+		}
+	}
+}
+
+// Missing counts must not be manufactured from Go's zero values.
+func TestCompletionWireMissingTokenCounts(t *testing.T) {
+	for _, input := range []string{`{"total_tokens":12}`, `{"prompt_tokens":12,"total_tokens":12}`, `{"prompt_tokens":null,"completion_tokens":null,"total_tokens":12}`} {
+		var usage *BifrostLLMUsage
+		if err := Unmarshal([]byte(input), &usage); err != nil {
+			t.Fatal(err)
+		}
+		for name, response := range map[string]any{
+			"chat":        (&BifrostChatResponse{Usage: usage}).WithPreservedUsage(),
+			"text":        (&BifrostTextCompletionResponse{Usage: usage}).WithPreservedUsage(),
+			"chat stream": &BifrostStreamChunk{BifrostChatResponse: &BifrostChatResponse{Usage: usage}},
+			"text stream": &BifrostStreamChunk{BifrostTextCompletionResponse: &BifrostTextCompletionResponse{Usage: usage}},
+		} {
+			t.Run(name+input, func(t *testing.T) {
+				wire, err := MarshalSorted(response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var body struct {
+					Usage map[string]json.RawMessage `json:"usage"`
+				}
+				if err := json.Unmarshal(wire, &body); err != nil {
+					t.Fatal(err)
+				}
+				for field, count := range map[string]int{"prompt_tokens": usage.PromptTokens, "completion_tokens": usage.CompletionTokens} {
+					if _, exists := body.Usage[field]; exists != (count != 0) {
+						t.Errorf("%s was fabricated: %s", field, wire)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCompletionWirePreservesReportedTokenCounts(t *testing.T) {
+	for _, input := range []string{
+		`null`,
+		`{"total_tokens":12}`,
+		`{"prompt_tokens":0,"total_tokens":12}`,
+		`{"completion_tokens":0,"total_tokens":12}`,
+		`{"prompt_tokens":12,"total_tokens":12}`,
+		`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`,
+		`{"prompt_tokens":0,"completion_tokens":2,"total_tokens":2}`,
+		`{"prompt_tokens":3,"completion_tokens":0,"total_tokens":3}`,
+		`{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			var usage *BifrostLLMUsage
+			if err := Unmarshal([]byte(input), &usage); err != nil {
+				t.Fatal(err)
+			}
+			if usage != nil {
+				var fields map[string]json.RawMessage
+				if err := json.Unmarshal([]byte(input), &fields); err != nil {
+					t.Fatal(err)
+				}
+				usage.PromptTokensExplicitZero = string(fields["prompt_tokens"]) == "0"
+				usage.CompletionTokensExplicitZero = string(fields["completion_tokens"]) == "0"
+			}
+			before, err := MarshalSorted(usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			chat := &BifrostChatResponse{ID: "usage-test", Model: "fixture", Object: "chat.completion", Usage: usage}
+			text := &BifrostTextCompletionResponse{ID: "usage-test", Model: "fixture", Object: "text_completion", Usage: usage}
+			if usage == nil || (usage.PromptTokens != 0 && usage.CompletionTokens != 0) {
+				if chat.WithPreservedUsage() != chat || text.WithPreservedUsage() != text {
+					t.Fatal("nil/nonzero usage should keep the original response")
+				}
+			}
+			for name, response := range map[string]any{
+				"chat":        chat.WithPreservedUsage(),
+				"text":        text.WithPreservedUsage(),
+				"chat stream": &BifrostStreamChunk{BifrostChatResponse: chat},
+				"text stream": &BifrostStreamChunk{BifrostTextCompletionResponse: text},
+			} {
+				for encoder, marshal := range map[string]func(any) ([]byte, error){
+					"sonic": MarshalSorted, "stdlib": json.Marshal,
+				} {
+					t.Run(name+"/"+encoder, func(t *testing.T) {
+						wire, err := marshal(response)
+						if err != nil {
+							t.Fatal(err)
+						}
+						var body struct {
+							ID    string          `json:"id"`
+							Model string          `json:"model"`
+							Usage json.RawMessage `json:"usage"`
+						}
+						if err := json.Unmarshal(wire, &body); err != nil {
+							t.Fatal(err)
+						}
+						if body.ID != "usage-test" || body.Model != "fixture" {
+							t.Fatalf("response fields lost: %s", wire)
+						}
+						if usage == nil {
+							if string(body.Usage) != "null" {
+								t.Fatalf("nil usage changed: %s", wire)
+							}
+							return
+						}
+						// Compare fields, not decoded ints: absent fields also decode to zero.
+						var wantFields, gotFields map[string]json.RawMessage
+						if err := json.Unmarshal([]byte(input), &wantFields); err != nil {
+							t.Fatal(err)
+						}
+						if err := json.Unmarshal(body.Usage, &gotFields); err != nil {
+							t.Fatal(err)
+						}
+						for field, want := range wantFields {
+							if string(gotFields[field]) != string(want) {
+								t.Errorf("%s = %s, want %s; usage = %s", field, gotFields[field], want, body.Usage)
+							}
+						}
+						for _, field := range []string{"prompt_tokens", "completion_tokens"} {
+							if _, reported := wantFields[field]; !reported {
+								if _, exists := gotFields[field]; exists {
+									t.Errorf("unreported %s was added: %s", field, body.Usage)
+								}
+							}
+						}
+						for _, field := range []string{"prompt_tokens_details", "completion_tokens_details", "cost"} {
+							if _, ok := gotFields[field]; ok {
+								t.Errorf("absent optional field %s was added: %s", field, body.Usage)
+							}
+						}
+					})
+				}
+			}
+			after, err := MarshalSorted(usage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("shared usage was mutated: before %s, after %s", before, after)
+			}
+		})
+	}
+}
+
+func BenchmarkCompletionWireUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		usage *BifrostLLMUsage
+	}{
+		{name: "nil"},
+		{name: "missing", usage: &BifrostLLMUsage{TotalTokens: 12}},
+		{name: "zero", usage: &BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}},
+		{name: "nonzero", usage: &BifrostLLMUsage{PromptTokens: 204, CompletionTokens: 2, TotalTokens: 206}},
+	} {
+		chat := &BifrostChatResponse{ID: "bench", Model: "fixture", Object: "chat.completion", Usage: tc.usage}
+		text := &BifrostTextCompletionResponse{ID: "bench", Model: "fixture", Object: "text_completion", Usage: tc.usage}
+		for name, view := range map[string]func() any{
+			"chat/before": func() any { return chat }, "chat/after": chat.WithPreservedUsage,
+			"text/before": func() any { return text }, "text/after": text.WithPreservedUsage,
+		} {
+			b.Run(tc.name+"/"+name, func(b *testing.B) {
+				if _, err := MarshalSorted(view()); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for b.Loop() {
+					if _, err := MarshalSorted(view()); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestMergeBifrostLLMUsageExplicitZero(t *testing.T) {
+	zero := &BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}
+	for _, tc := range []struct {
+		name        string
+		left, right *BifrostLLMUsage
+		reported    bool
+	}{
+		{"both reported", zero, zero, true},
+		{"unknown earlier turn", &BifrostLLMUsage{TotalTokens: 12}, zero, false},
+		{"unknown later turn", zero, &BifrostLLMUsage{TotalTokens: 12}, false},
+		{"absent earlier turn", nil, zero, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := MergeBifrostLLMUsage(tc.left, tc.right).DeepCopy()
+			wire, err := MarshalSorted((&BifrostChatResponse{Usage: usage}).WithPreservedUsage())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body struct {
+				Usage map[string]json.RawMessage `json:"usage"`
+			}
+			if err := json.Unmarshal(wire, &body); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"prompt_tokens", "completion_tokens"} {
+				if _, exists := body.Usage[field]; exists != tc.reported {
+					t.Errorf("%s presence wrong: %s", field, wire)
+				}
+			}
+		})
+	}
+}
 
 func TestMergeBifrostLLMUsage(t *testing.T) {
 	base := &BifrostLLMUsage{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,6 +231,171 @@ func cacheHits(t *testing.T, plugin *Plugin, ctx *schemas.BifrostContext, req *s
 	}
 	plugin.clearCacheState(ctx.Value(schemas.BifrostContextKeyRequestID).(string))
 	return shortCircuit != nil && shortCircuit.Response != nil
+}
+
+// Exercise actual cache writes and hits; JSON round trips must not erase the
+// difference between explicit zero counts and unknown counts.
+func TestCompletionUsageSurvivesCache(t *testing.T) {
+	for _, text := range []bool{false, true} {
+		for _, streaming := range []bool{false, true} {
+			for _, usage := range []*schemas.BifrostLLMUsage{
+				{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true},
+				{PromptTokensExplicitZero: true, TotalTokens: 12},
+				{TotalTokens: 12},
+			} {
+				name := "unary"
+				if streaming {
+					name = "stream"
+				}
+				if text {
+					name = "text/" + name
+				} else {
+					name = "chat/" + name
+				}
+				t.Run(name, func(t *testing.T) {
+					plugin := identityScopeTestPlugin(t, newObservableStore(), "")
+					key := keyForTest(t, "")
+					req := identityTestChatRequest("cache explicit zero counts", nil)
+					response := identityTestChatResponse("answer")
+					if streaming {
+						req.RequestType = schemas.ChatCompletionStreamRequest
+						response = newChatStreamChunk(0, "answer", nil)
+					}
+					response.ChatResponse.Usage = usage
+					if text {
+						req = &schemas.BifrostRequest{RequestType: schemas.TextCompletionRequest, TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: &schemas.TextCompletionInput{PromptStr: schemas.Ptr("cache explicit zero counts")}}}
+						if streaming {
+							req.RequestType = schemas.TextCompletionStreamRequest
+						}
+						response = &schemas.BifrostResponse{TextCompletionResponse: response.ChatResponse.ToTextCompletionResponse()}
+						response.TextCompletionResponse.ExtraFields.RequestType = req.RequestType
+					}
+					seed := identityContext(t, key, identityRef{})
+					if _, sc, err := plugin.PreLLMHook(seed, req); err != nil || sc != nil {
+						t.Fatalf("expected miss: %v, %v", sc, err)
+					}
+					if streaming {
+						seed.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					}
+					if _, _, err := plugin.PostLLMHook(seed, response, nil); err != nil {
+						t.Fatal(err)
+					}
+					plugin.WaitForPendingOperations()
+					ctx := identityContext(t, key, identityRef{})
+					_, sc, err := plugin.PreLLMHook(ctx, req)
+					if err != nil || sc == nil {
+						t.Fatalf("expected hit: %v, %v", sc, err)
+					}
+					check := func(wire []byte) {
+						var body struct {
+							Usage map[string]json.RawMessage `json:"usage"`
+						}
+						if err := json.Unmarshal(wire, &body); err != nil {
+							t.Fatal(err)
+						}
+						for field, reported := range map[string]bool{"prompt_tokens": usage.PromptTokensExplicitZero, "completion_tokens": usage.CompletionTokensExplicitZero} {
+							if _, exists := body.Usage[field]; exists != reported {
+								t.Errorf("cached %s presence changed: %s", field, wire)
+							}
+						}
+						if strings.Contains(string(wire), "_completion_usage_zeros") {
+							t.Errorf("cache metadata leaked to wire: %s", wire)
+						}
+					}
+					if streaming {
+						if sc.Stream == nil {
+							t.Fatal("no cached stream")
+						}
+						count := 0
+						for chunk := range sc.Stream {
+							count++
+							wire, err := schemas.MarshalSorted(chunk)
+							if err != nil {
+								t.Fatal(err)
+							}
+							check(wire)
+						}
+						if count != 1 {
+							t.Fatalf("expected one cached chunk, got %d", count)
+						}
+					} else {
+						if sc.Response == nil {
+							t.Fatal("no cached response")
+						}
+						var view any
+						if text {
+							if sc.Response.TextCompletionResponse == nil {
+								t.Fatal("no cached text response")
+							}
+							view = sc.Response.TextCompletionResponse.WithPreservedUsage()
+						} else {
+							if sc.Response.ChatResponse == nil {
+								t.Fatal("no cached chat response")
+							}
+							view = sc.Response.ChatResponse.WithPreservedUsage()
+						}
+						wire, err := schemas.MarshalSorted(view)
+						if err != nil {
+							t.Fatal(err)
+						}
+						check(wire)
+					}
+				})
+			}
+		}
+	}
+}
+
+func BenchmarkCachedCompletionUsage(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		usage *schemas.BifrostLLMUsage
+	}{
+		{"nonzero", &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}},
+		{"zero", &schemas.BifrostLLMUsage{PromptTokensExplicitZero: true, CompletionTokensExplicitZero: true}},
+		{"missing", &schemas.BifrostLLMUsage{TotalTokens: 12}},
+	} {
+		response := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: tc.usage}}
+		body, err := marshalCachedResponse(response)
+		if err != nil {
+			b.Fatal(err)
+		}
+		for _, after := range []bool{false, true} {
+			version := "before"
+			if after {
+				version = "after"
+			}
+			b.Run(tc.name+"/write/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var err error
+					if after {
+						_, err = marshalCachedResponse(response)
+					} else {
+						_, err = schemas.MarshalSorted(response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			b.Run(tc.name+"/read/"+version, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					var response schemas.BifrostResponse
+					var err error
+					if after {
+						err = unmarshalCachedResponse(body, &response)
+					} else {
+						err = json.Unmarshal(body, &response)
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
 }
 
 // TestIdentityScopedDirectCache pins identity isolation on the direct path with scoping on (the

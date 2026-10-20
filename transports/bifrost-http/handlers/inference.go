@@ -1197,7 +1197,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Send successful response
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 }
 
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
@@ -1276,7 +1276,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	mt, mh := startTransportSpan(ctx, "response-marshal")
-	SendJSON(ctx, resp)
+	SendJSON(ctx, resp.WithPreservedUsage())
 	if mt != nil {
 		mt.EndSpan(mh, schemas.SpanStatusOk, "")
 	}

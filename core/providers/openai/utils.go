@@ -5,7 +5,25 @@ import (
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
+
+// captureCompletionUsageZeros records only numeric zeros from an OpenAI-shaped
+// response. Nil/nonzero usage needs no JSON lookup; absent and null fields do not
+// become zero. Store only flags, never a reference to the response buffer.
+func captureCompletionUsageZeros(body []byte, usage *schemas.BifrostLLMUsage) {
+	if usage == nil {
+		return
+	}
+	if usage.PromptTokens == 0 {
+		value := utils.GetJSONField(body, "usage.prompt_tokens")
+		usage.PromptTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+	}
+	if usage.CompletionTokens == 0 {
+		value := utils.GetJSONField(body, "usage.completion_tokens")
+		usage.CompletionTokensExplicitZero = value.Type == gjson.Number && value.Num == 0
+	}
+}
 
 // CustomResponseHandler is a function that produces a Bifrost response from a Bifrost request.
 // T is the concrete Bifrost response type (e.g. BifrostEmbeddingResponse, BifrostTextCompletionResponse, BifrostChatResponse, BifrostResponsesResponse, BifrostImageGenerationResponse, BifrostTranscriptionResponse).

@@ -15,8 +15,61 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func completionUsageForCache(res *schemas.BifrostResponse) *schemas.BifrostLLMUsage {
+	if res == nil {
+		return nil
+	}
+	if res.ChatResponse != nil {
+		return res.ChatResponse.Usage
+	}
+	if res.TextCompletionResponse != nil {
+		return res.TextCompletionResponse.Usage
+	}
+	return nil
+}
+
+// Keep completion presence metadata in the cache envelope, never in the client
+// response. Old entries without metadata retain their existing missing counts.
+// The two-bit mask has a constant size and expires with the existing cache entry.
+func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
+	var zeros uint8
+	if usage := completionUsageForCache(res); usage != nil {
+		if usage.PromptTokens == 0 && usage.PromptTokensExplicitZero {
+			zeros |= 1
+		}
+		if usage.CompletionTokens == 0 && usage.CompletionTokensExplicitZero {
+			zeros |= 2
+		}
+	}
+	if zeros == 0 {
+		return schemas.MarshalSorted(res)
+	}
+	return schemas.MarshalSorted(&struct {
+		*schemas.BifrostResponse
+		CompletionUsageZeros uint8 `json:"_completion_usage_zeros"`
+	}{res, zeros})
+}
+
+func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
+	if err := json.Unmarshal(data, res); err != nil {
+		return err
+	}
+	usage := completionUsageForCache(res)
+	if usage == nil || (usage.PromptTokens != 0 && usage.CompletionTokens != 0) {
+		return nil
+	}
+	zeros := providerUtils.GetJSONField(data, "_completion_usage_zeros").Int()
+	if zeros < 1 || zeros > 3 {
+		return nil
+	}
+	usage.PromptTokensExplicitZero = usage.PromptTokens == 0 && zeros&1 != 0
+	usage.CompletionTokensExplicitZero = usage.CompletionTokens == 0 && zeros&2 != 0
+	return nil
+}
 
 // directCacheNamespace is a fixed namespace UUID for generating deterministic
 // UUID v5 cache IDs via uuid.NewSHA1, used by generateDirectCacheID. The

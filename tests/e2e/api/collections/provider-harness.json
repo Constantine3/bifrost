@@ -276696,6 +276696,2066 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. OpenAI zero-token-usage survives completion wire serialization (#8749)",
+      "description": "Deterministic local fixture regression for #8749. OpenAI completion parsing records explicitly reported zero counts separately from missing/null counts. Completion wire views retain only those explicit zeros; the shared type, embeddings, rerank and decisions keep their existing optional-count semantics. Covers custom gemini-web and built-in openai on /v1 and /openai/v1 chat/completions and completions (unary and SSE), nonzero/absent usage controls, and embedding controls on both routes. The original 16 zero-completion cases fail on upstream. Total-only, one-zero/one-missing and null-count controls reject the earlier unconditional-zero patch; missing counters must not be fabricated. Six original nonzero/nil/embedding controls retain their existing behavior. Cost/details preservation, decision/rerank isolation, and Chat/Text cache writes and replay are pinned in offline Go tests. Cache entries store explicit-zero metadata separately; old entries without it retain missing counts. The fixture reaches the real provider parser and gateway, not a mocker-plugin short circuit. No paid provider calls.\n\nUse a fresh isolated profile on the same host. Terminal 1, repository root: node tests/e2e/api/runners/run-zero-token-usage-fixture.mjs /tmp/bifrost-zero-token-usage (directory must not exist). Terminal 2: make dev PORT=3022 APP_DIR=/tmp/bifrost-zero-token-usage. Wait for curl -fsS http://localhost:3022/health. Terminal 3: log in at POST /api/session/login with {\"username\":\"usage-fixture\",\"password\":\"fixture-only-password\"}, save its token cookie, and export BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\" for the harness management preflight. Then: make run-provider-harness-test PROVIDER=openai FEATURE=\"zero-token-usage\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3022. Verify port 3022 is free before starting. Stop the gateway and fixture afterward; remove only this disposable profile when no longer needed. The fixture uses an ephemeral loopback port and dummy credentials. PREVIEW keeps these cases out of ordinary paid sweeps.",
+      "item": [
+        {
+          "name": "262.1 [PREVIEW] OpenAI gemini-web/zero /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.2 [PREVIEW] OpenAI gemini-web/zero /v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.3 [PREVIEW] OpenAI gemini-web/zero /openai/v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.4 [PREVIEW] OpenAI gemini-web/zero /openai/v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.5 [PREVIEW] OpenAI gemini-web/zero /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.6 [PREVIEW] OpenAI gemini-web/zero /v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.7 [PREVIEW] OpenAI gemini-web/zero /openai/v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.8 [PREVIEW] OpenAI gemini-web/zero /openai/v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.9 [PREVIEW] OpenAI openai/zero /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.10 [PREVIEW] OpenAI openai/zero /v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.11 [PREVIEW] OpenAI openai/zero /openai/v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.12 [PREVIEW] OpenAI openai/zero /openai/v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.13 [PREVIEW] OpenAI openai/zero /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.14 [PREVIEW] OpenAI openai/zero /v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.15 [PREVIEW] OpenAI openai/zero /openai/v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.16 [PREVIEW] OpenAI openai/zero /openai/v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.17 [PREVIEW] OpenAI gemini-web/nonzero /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":204,\"completion_tokens\":2,\"total_tokens\":206};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/nonzero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.18 [PREVIEW] OpenAI gemini-web/nonzero /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":204,\"completion_tokens\":2,\"total_tokens\":206};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/nonzero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.19 [PREVIEW] OpenAI gemini-web/no-usage /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('absent usage is not fabricated', function () { pm.expect(usages[0] == null, text).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/no-usage\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.20 [PREVIEW] OpenAI gemini-web/no-usage /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('absent usage is not fabricated', function () { pm.expect(usages[0] == null, text).to.eql(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/no-usage\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.21 [PREVIEW] OpenAI gemini-web/zero /v1/embeddings unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('embedding data survives', function () { pm.expect(body.data[0].embedding, text).to.eql([0.25, 0.75]); });",
+                  "pm.test('embedding keeps optional-count semantics', function () {",
+                  "  pm.expect(body.usage, text).to.eql({total_tokens: 0});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "262.22 [PREVIEW] OpenAI gemini-web/zero /openai/v1/embeddings unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('embedding data survives', function () { pm.expect(body.data[0].embedding, text).to.eql([0.25, 0.75]); });",
+                  "pm.test('embedding keeps optional-count semantics', function () {",
+                  "  pm.expect(body.usage, text).to.eql({total_tokens: 0});",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/zero\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "262.23 [PREVIEW] OpenAI gemini-web/total-only /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.24 [PREVIEW] OpenAI gemini-web/total-only /v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.25 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.26 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.27 [PREVIEW] OpenAI gemini-web/total-only /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.28 [PREVIEW] OpenAI gemini-web/total-only /v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.29 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.30 [PREVIEW] OpenAI gemini-web/total-only /openai/v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/total-only\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.31 [PREVIEW] OpenAI gemini-web/prompt-zero /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/prompt-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.32 [PREVIEW] OpenAI gemini-web/prompt-zero /v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/prompt-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.33 [PREVIEW] OpenAI gemini-web/prompt-zero /openai/v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/prompt-zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.34 [PREVIEW] OpenAI gemini-web/prompt-zero /openai/v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"prompt_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/prompt-zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.35 [PREVIEW] OpenAI gemini-web/completion-zero /v1/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"completion_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/completion-zero\",\n  \"prompt\": \"hello\",\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.36 [PREVIEW] OpenAI gemini-web/completion-zero /v1/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"completion_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/completion-zero\",\n  \"prompt\": \"hello\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.37 [PREVIEW] OpenAI gemini-web/completion-zero /openai/v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"completion_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/completion-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.38 [PREVIEW] OpenAI gemini-web/completion-zero /openai/v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"completion_tokens\":0,\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/completion-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "262.39 [PREVIEW] OpenAI gemini-web/null-counts /v1/chat/completions unary zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test('fixture content survives', function () { pm.expect(body.choices[0].text || (body.choices[0].message || {}).content, text).to.eql('fixture response'); });",
+                  "var usages = [body.usage];",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/null-counts\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": false\n}"
+            }
+          }
+        },
+        {
+          "name": "262.40 [PREVIEW] OpenAI gemini-web/null-counts /v1/chat/completions SSE zero-token-usage - #8749",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('local fixture succeeds', function () { pm.expect(pm.response.code, text).to.eql(200); });",
+                  "var frames = text.split(String.fromCharCode(10)).filter(function (line) { return line.indexOf('data: ') === 0; }).map(function (line) { return line.slice(6).trim(); });",
+                  "pm.test('stream completes', function () { pm.expect(frames, text).to.include('[DONE]'); });",
+                  "var chunks = frames.filter(function (frame) { return frame !== '[DONE]'; }).map(function (frame) { return JSON.parse(frame); });",
+                  "pm.test('stream preserves content without errors', function () {",
+                  "  chunks.forEach(function (chunk) { pm.expect(chunk.error, text).to.be.undefined; });",
+                  "  var content = chunks.map(function (chunk) { return (chunk.choices || []).map(function (choice) { return choice.text || (choice.delta || {}).content || ''; }).join(''); }).join('');",
+                  "  pm.expect(content, text).to.eql('fixture response');",
+                  "});",
+                  "var usages = chunks.filter(function (chunk) { return chunk.usage != null; }).map(function (chunk) { return chunk.usage; });",
+                  "pm.test('stream includes usage', function () { pm.expect(usages.length, text).to.be.above(0); });",
+                  "pm.test('completion counts survive, including zero', function () {",
+                  "  var expected = {\"total_tokens\":12};",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, text).to.be.an('object');",
+                  "    pm.expect(usage, text).to.eql(expected);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini-web/null-counts\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
