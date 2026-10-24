@@ -1204,6 +1204,29 @@ Before Bifrost 2.2.2, a failure Bifrost raised itself — a request-conversion e
 
 > **Note:** Size metrics are only recorded when the `Content-Length` header is present. Requests or responses without it (e.g., chunked transfer encoding, streaming responses) do not produce data points in these histograms.
 
+### Trace export health
+
+Profiles with both `traces_enabled` and `metrics_enabled` publish two additional OTLP counters through their `metrics_endpoint`:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `bifrost_otel_trace_exports_failed_total` | Counter | Trace export attempts that returned an error, including timeouts |
+| `bifrost_otel_trace_exports_suppressed_total` | Counter | Traces skipped because the profile's export circuit breaker was open |
+
+The SDK reads the existing atomic counts at each metrics collection, including when no new requests arrive. Both start at zero, retain their totals after the collector recovers, and reset when the plugin is recreated or Bifrost restarts. Each data point carries `bifrost_instance_id` and `otel_profile_index` (the zero-based index in the configured `profiles` array, including disabled entries), so profiles sharing a service name and metrics destination remain distinguishable. Collector URLs and request identifiers are not metric labels. A metrics-only profile does not report another profile's trace export health.
+
+With a Prometheus-compatible backend, alert on new breaker skips using:
+
+```promql
+increase(bifrost_otel_trace_exports_suppressed_total[5m]) > 0
+```
+
+These counters describe the plugin's export failures and breaker skips, not all lost traces. An export timeout can occur after the collector has accepted the trace, and traces dropped by the tracer's concurrency limit before reaching the plugin are not included. They do not add retries or replay skipped traces.
+
+<Note>
+These metrics are pushed via OTLP; they are not added to the telemetry plugin's `/metrics` endpoint. If traces and metrics share an unavailable collector, the counters cannot be delivered during the outage. With the default cumulative temporality, a later successful push reports the current totals if the plugin has not been recreated. For visibility during a trace-collector outage, configure a separately available `metrics_endpoint` on the same profile.
+</Note>
+
 ### Overhead breakdown
 
 `bifrost_overhead_component_microseconds` decomposes the same overhead measured by `bifrost_overhead_latency_microseconds` into per-component histograms, sharing its bucket boundaries. It carries the same base attributes plus an `overhead_component` attribute naming the internal component, so summing every component for a given attribute set reconstructs the scalar total.
